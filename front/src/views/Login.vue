@@ -30,13 +30,28 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import api from '../api'
 
 const router = useRouter()
 const activeTab = ref('login')
 const loading = ref(false)
 const form = ref({ username: '', password: '' })
+
+// 格式化时间显示（可自定义）
+const formatLastLogin = (isoString) => {
+  if (!isoString) return '这是您第一次登录'
+  const date = new Date(isoString)
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  })
+}
 
 const handleSubmit = async () => {
   if (!form.value.username || !form.value.password) {
@@ -48,10 +63,23 @@ const handleSubmit = async () => {
         ? await api.login(form.value)
         : await api.register(form.value)
 
-    // 保存 Token
+    // 保存 Token 和用户名
     localStorage.setItem('token', res.data.token)
     localStorage.setItem('username', res.data.username)
-    ElMessage.success('登录成功')
+
+    // 显示上次登录时间（仅在登录时显示）
+    if (activeTab.value === 'login' && res.data.last_login !== undefined) {
+      const lastLoginText = formatLastLogin(res.data.last_login)
+      ElNotification({
+        title: '登录成功',
+        message: `上次登录时间：${lastLoginText}`,
+        type: 'success',
+        duration: 5000,
+      })
+    } else {
+      ElMessage.success('登录成功')
+    }
+
     router.push('/')
   } catch (error) {
     ElMessage.error(error.response?.data?.error || '请求失败，请检查账号密码')

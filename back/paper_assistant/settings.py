@@ -24,6 +24,9 @@ INSTALLED_APPS = [
     # 本地应用
     'api',
 ]
+AUTHENTICATION_BACKENDS = [
+    'api.backends.CustomAllowInactiveBackend',
+]
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware', # 必须放在最前面处理跨域

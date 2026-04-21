@@ -1,14 +1,15 @@
 from rest_framework import viewsets, status, views, serializers
-from rest_framework.response import Response
 from rest_framework.decorators import action
-from rest_framework.authtoken.models import Token
-from django.contrib.auth.models import User
-from django.contrib.auth import authenticate
-from rest_framework.permissions import AllowAny
 from .models import Paper, Note
 from .serializers import PaperSerializer, NoteSerializer
 from .ai_service import process_paper_to_vector_db, ask_paper_question
 import threading
+from django.utils import timezone
+from django.contrib.auth import authenticate
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.authtoken.models import Token
+from django.contrib.auth.models import User
 
 
 # 简单的用户认证接口
@@ -29,10 +30,28 @@ class AuthView(views.APIView):
 
         elif action_type == 'login':
             user = authenticate(username=username, password=password)
-            if user:
-                token, _ = Token.objects.get_or_create(user=user)
-                return Response({"token": token.key, "username": user.username})
-            return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
+            # 验证用户存在且密码正确
+            if user is None:
+                return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
+            # 新增：检查 is_active 状态
+            if not user.is_active:
+                return Response({"error": "Account is disabled"}, status=status.HTTP_403_FORBIDDEN)
+
+            token, _ = Token.objects.get_or_create(user=user)
+
+            res = Response({
+                "token": token.key,
+                "username": user.username,
+                "last_login": user.last_login.isoformat() if user.last_login else None
+            })
+
+            # 更新最后登录时间
+            user.last_login = timezone.now()
+            user.save(update_fields=['last_login'])
+
+            return res
 
 
 # 论文处理
