@@ -323,3 +323,112 @@ def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None):
     except Exception as e:
         logger.error(f"Error in analyze_multiple_papers: {str(e)}")
         return {"keywords": [], "answer": f"系统处理多论文分析时出现错误: {str(e)}"}
+
+
+def _get_neo4j_graph():
+    """
+    连接 Neo4j 图数据库。
+    读取环境变量：NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD。
+    若未配置则返回 None，调用方需判断。
+    """
+    from langchain_neo4j import Neo4jGraph
+    uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    username = os.getenv("NEO4J_USERNAME", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "123456789")
+    if not password:
+        logger.warning("NEO4J_PASSWORD 未设置，跳过 Neo4j 写入")
+        return None
+    return Neo4jGraph(url=uri, username=username, password=password)
+
+
+def _graph_documents_to_echarts(graph_documents):
+    """
+    将 LLMGraphTransformer 返回的 graph_documents 转换为 ECharts force 图所需的
+    {nodes, links, categories} 格式。
+    """
+    nodes_dict = {}
+    links = []
+    categories_set = set()
+
+    for graph_doc in graph_documents:
+        for node in graph_doc.nodes:
+            node_type = node.type or "Entity"
+            categories_set.add(node_type)
+            if node.id not in nodes_dict:
+                nodes_dict[node.id] = {"id": node.id, "name": node.id, "category": node_type}
+
+        for rel in graph_doc.relationships:
+            src, tgt = rel.source.id, rel.target.id
+            links.append({"source": src, "target": tgt, "value": rel.type})
+            for nid in (src, tgt):
+                if nid not in nodes_dict:
+                    nodes_dict[nid] = {"id": nid, "name": nid, "category": "Entity"}
+                    categories_set.add("Entity")
+
+    # 按连接数动态调整节点大小（20~60 px）
+    conn_count: dict = {}
+    for link in links:
+        conn_count[link["source"]] = conn_count.get(link["source"], 0) + 1
+        conn_count[link["target"]] = conn_count.get(link["target"], 0) + 1
+
+    nodes_list = []
+    for node in nodes_dict.values():
+        count = conn_count.get(node["id"], 0)
+        node["symbolSize"] = max(20, min(60, 20 + count * 4))
+        node["value"] = count
+        nodes_list.append(node)
+
+    categories = [{"name": c} for c in sorted(categories_set)]
+    return {"nodes": nodes_list, "links": links, "categories": categories}
+
+
+def build_knowledge_graph(file_path, paper_id):
+    """
+    从 PDF 构建知识图谱：
+      1. 用 LLMGraphTransformer 抽取节点和关系
+      2. 写入 Neo4j（若已配置）
+      3. 将图谱转换为 ECharts 格式并返回，供前端可视化及 Django JSONField 持久化
+    """
+    try:
+        from langchain_experimental.graph_transformers import LLMGraphTransformer
+        from langchain_core.documents import Document
+
+        logger.info(f"Start building knowledge graph for paper {paper_id}")
+
+        # 1. 加载 PDF，合并全文并截断以控制 token 用量
+        loader = PyPDFLoader(file_path)
+        pages = loader.load()
+        full_text = "\n".join(page.page_content for page in pages)
+        full_text = full_text[:8000]
+
+        # 加上paper_id，用于在neo4j中查询论文对应的知识图谱
+        doc = Document(
+            page_content=full_text,
+            metadata={"source": file_path, "id": file_path, "paper_id": paper_id},
+        )
+
+        # 2. LLM 抽取图谱
+        llm = _get_llm()
+        transformer = LLMGraphTransformer(llm=llm)
+        graph_documents = transformer.convert_to_graph_documents([doc])
+
+        # 3. 写入 Neo4j
+        neo4j_graph = _get_neo4j_graph()
+        if neo4j_graph is not None:
+            # include_source=True：在 Neo4j 中为源文档创建节点并与实体关联
+            neo4j_graph.add_graph_documents(graph_documents, include_source=True)
+            logger.info(f"Knowledge graph for paper {paper_id} saved to Neo4j")
+        else:
+            logger.info(f"Neo4j not configured, skipping persistence for paper {paper_id}")
+
+        # 4. 转换为 ECharts 格式返回
+        echarts_data = _graph_documents_to_echarts(graph_documents)
+        logger.info(
+            f"Knowledge graph built for paper {paper_id}: "
+            f"{len(echarts_data['nodes'])} nodes, {len(echarts_data['links'])} links"
+        )
+        return echarts_data
+
+    except Exception as e:
+        logger.error(f"Error building knowledge graph for paper {paper_id}: {str(e)}")
+        return None

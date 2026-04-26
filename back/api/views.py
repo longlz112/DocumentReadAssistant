@@ -2,7 +2,7 @@ from rest_framework import viewsets, status, views, serializers
 from rest_framework.decorators import action
 from .models import Paper
 from .serializers import PaperSerializer
-from .ai_service import process_paper_to_vector_db, ask_paper_question, analyze_multiple_papers, extract_paper_metadata
+from .ai_service import process_paper_to_vector_db, ask_paper_question, analyze_multiple_papers, extract_paper_metadata, build_knowledge_graph
 import threading
 from django.utils import timezone
 from django.contrib.auth import authenticate
@@ -218,3 +218,41 @@ class PaperViewSet(viewsets.ModelViewSet):
         }
         result = analyze_multiple_papers(paper_ids_titles, question, paper_metadata)
         return Response({"question": question, **result})
+
+    @action(detail=True, methods=['post'], url_path='build_knowledge_graph')
+    def build_knowledge_graph_action(self, request, pk=None):
+        """触发知识图谱构建（异步）: POST /api/papers/{id}/build_knowledge_graph/"""
+        paper = self.get_object()
+
+        if not paper.is_processed:
+            return Response({"error": "论文尚未完成解析，请等待解析完成后再构建知识图谱"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        if paper.knowledge_graph_status == 'building':
+            return Response({"message": "知识图谱正在构建中，请稍候"})
+
+        paper.knowledge_graph_status = 'building'
+        paper.save(update_fields=['knowledge_graph_status'])
+
+        def graph_task():
+            result = build_knowledge_graph(paper.file.path, paper.id)
+            if result is not None:
+                paper.knowledge_graph_data = result
+                paper.knowledge_graph_status = 'ready'
+            else:
+                paper.knowledge_graph_status = 'error'
+            paper.save(update_fields=['knowledge_graph_data', 'knowledge_graph_status'])
+
+        thread = threading.Thread(target=graph_task)
+        thread.start()
+
+        return Response({"message": "知识图谱构建已开始，请稍后查询结果"})
+
+    @action(detail=True, methods=['get'], url_path='knowledge_graph')
+    def knowledge_graph_data(self, request, pk=None):
+        """获取知识图谱数据: GET /api/papers/{id}/knowledge_graph/"""
+        paper = self.get_object()
+        return Response({
+            "status": paper.knowledge_graph_status,
+            "data": paper.knowledge_graph_data,
+        })

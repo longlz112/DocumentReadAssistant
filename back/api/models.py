@@ -18,6 +18,11 @@ class Paper(models.Model):
     meta_year = models.CharField(max_length=10, default='无', blank=True)
     meta_confirmed = models.BooleanField(default=False)
 
+    # 知识图谱字段
+    knowledge_graph_data = models.JSONField(null=True, blank=True)
+    # status: '' = 未构建, 'building' = 构建中, 'ready' = 已完成, 'error' = 构建失败
+    knowledge_graph_status = models.CharField(max_length=20, default='')
+
     def __str__(self):
         return self.title
 

@@ -14,5 +14,6 @@ class PaperSerializer(serializers.ModelSerializer):
             'id', 'title', 'file', 'uploaded_at', 'is_processed',
             'meta_title', 'meta_authors', 'meta_keywords', 'meta_abstract',
             'meta_journal', 'meta_year', 'meta_confirmed',
+            'knowledge_graph_status',
         ]
-        read_only_fields = ['is_processed', 'uploaded_at']
+        read_only_fields = ['is_processed', 'uploaded_at', 'knowledge_graph_status']

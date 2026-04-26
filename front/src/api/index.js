@@ -32,4 +32,8 @@ export default {
     getMetadata: (paperId) => api.get(`papers/${paperId}/metadata/`),
     reextractMetadata: (paperId) => api.post(`papers/${paperId}/reextract_metadata/`),
     updateMetadata: (paperId, data) => api.post(`papers/${paperId}/update_metadata/`, data),
+
+    // 知识图谱
+    buildKnowledgeGraph: (paperId) => api.post(`papers/${paperId}/build_knowledge_graph/`),
+    getKnowledgeGraph: (paperId) => api.get(`papers/${paperId}/knowledge_graph/`),
 }
