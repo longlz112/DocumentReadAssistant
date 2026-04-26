@@ -4,3 +4,7 @@ db.sqlite3
 chroma_db/
 # 用户上传的媒体文件目录
 media/
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class

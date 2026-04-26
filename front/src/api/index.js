@@ -26,9 +26,10 @@ export default {
     }),
     askQuestion: (paperId, question) => api.post(`papers/${paperId}/ask/`, { question }),
     pollingStatus: (paperId) => api.get(`papers/${paperId}/status/`),
+    analyzeMultiple: (paperIds, question) => api.post('papers/analyze_multi/', { paper_ids: paperIds, question }),
 
-    // 笔记
-    getNotes: (paperId) => api.get(`notes/?paper_id=${paperId}`),
-    addNote: (paperId, content) => api.post('notes/', { paper: paperId, content }),
-    deleteNote: (noteId) => api.delete(`notes/${noteId}/`)
+    // 元数据
+    getMetadata: (paperId) => api.get(`papers/${paperId}/metadata/`),
+    reextractMetadata: (paperId) => api.post(`papers/${paperId}/reextract_metadata/`),
+    updateMetadata: (paperId, data) => api.post(`papers/${paperId}/update_metadata/`, data),
 }

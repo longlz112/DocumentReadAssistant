@@ -1,8 +1,8 @@
 from rest_framework import viewsets, status, views, serializers
 from rest_framework.decorators import action
-from .models import Paper, Note
-from .serializers import PaperSerializer, NoteSerializer
-from .ai_service import process_paper_to_vector_db, ask_paper_question
+from .models import Paper
+from .serializers import PaperSerializer
+from .ai_service import process_paper_to_vector_db, ask_paper_question, analyze_multiple_papers, extract_paper_metadata
 import threading
 from django.utils import timezone
 from django.contrib.auth import authenticate
@@ -79,6 +79,18 @@ class PaperViewSet(viewsets.ModelViewSet):
             if success:
                 paper.is_processed = True
                 paper.save()
+            # 提取元数据（不影响 is_processed 状态）
+            meta = extract_paper_metadata(paper.file.path)
+            paper.meta_title = meta["title"]
+            paper.meta_authors = meta["authors"]
+            paper.meta_keywords = meta["keywords"]
+            paper.meta_abstract = meta["abstract"]
+            paper.meta_journal = meta["journal"]
+            paper.meta_year = meta["year"]
+            paper.save(update_fields=[
+                'meta_title', 'meta_authors', 'meta_keywords',
+                'meta_abstract', 'meta_journal', 'meta_year',
+            ])
 
         thread = threading.Thread(target=process_task)
         thread.start()
@@ -109,19 +121,100 @@ class PaperViewSet(viewsets.ModelViewSet):
         else:
             return Response({"status": "processing", "message": "The paper is still being processed."})
 
-#
-# class NoteViewSet(viewsets.ModelViewSet):
-#     serializer_class = NoteSerializer
-#
-#     def get_queryset(self):
-#         # 可以按论文ID过滤笔记: GET /api/notes/?paper_id=1
-#         queryset = Note.objects.filter(user=self.request.user).order_by('-updated_at')
-#         paper_id = self.request.query_params.get('paper_id')
-#         if paper_id:
-#             queryset = queryset.filter(paper_id=paper_id)
-#         return queryset
-#
-#     def perform_create(self, serializer):
-#         serializer.save(user=self.request.user)
-#
-#
+    @action(detail=True, methods=['get'])
+    def metadata(self, request, pk=None):
+        """获取论文元数据: GET /api/papers/{id}/metadata/"""
+        paper = self.get_object()
+        return Response({
+            "id": paper.id,
+            "meta_title": paper.meta_title,
+            "meta_authors": paper.meta_authors,
+            "meta_keywords": paper.meta_keywords,
+            "meta_abstract": paper.meta_abstract,
+            "meta_journal": paper.meta_journal,
+            "meta_year": paper.meta_year,
+            "meta_confirmed": paper.meta_confirmed,
+        })
+
+    @action(detail=True, methods=['post'], url_path='reextract_metadata')
+    def reextract_metadata(self, request, pk=None):
+        """重新提取元数据: POST /api/papers/{id}/reextract_metadata/"""
+        paper = self.get_object()
+        meta = extract_paper_metadata(paper.file.path)
+        paper.meta_title = meta["title"]
+        paper.meta_authors = meta["authors"]
+        paper.meta_keywords = meta["keywords"]
+        paper.meta_abstract = meta["abstract"]
+        paper.meta_journal = meta["journal"]
+        paper.meta_year = meta["year"]
+        paper.meta_confirmed = False
+        paper.save(update_fields=[
+            'meta_title', 'meta_authors', 'meta_keywords',
+            'meta_abstract', 'meta_journal', 'meta_year', 'meta_confirmed',
+        ])
+        return Response({
+            "id": paper.id,
+            "meta_title": paper.meta_title,
+            "meta_authors": paper.meta_authors,
+            "meta_keywords": paper.meta_keywords,
+            "meta_abstract": paper.meta_abstract,
+            "meta_journal": paper.meta_journal,
+            "meta_year": paper.meta_year,
+            "meta_confirmed": paper.meta_confirmed,
+        })
+
+    @action(detail=True, methods=['post'], url_path='update_metadata')
+    def update_metadata(self, request, pk=None):
+        """手动保存/确认元数据: POST /api/papers/{id}/update_metadata/"""
+        paper = self.get_object()
+        fields = ['meta_title', 'meta_authors', 'meta_keywords', 'meta_abstract', 'meta_journal', 'meta_year']
+        for field in fields:
+            if field in request.data:
+                setattr(paper, field, request.data[field] or '无')
+        paper.meta_confirmed = True
+        paper.save(update_fields=fields + ['meta_confirmed'])
+        return Response({
+            "id": paper.id,
+            "meta_title": paper.meta_title,
+            "meta_authors": paper.meta_authors,
+            "meta_keywords": paper.meta_keywords,
+            "meta_abstract": paper.meta_abstract,
+            "meta_journal": paper.meta_journal,
+            "meta_year": paper.meta_year,
+            "meta_confirmed": paper.meta_confirmed,
+        })
+
+    @action(detail=False, methods=['post'], url_path='analyze_multi')
+    def analyze_multi(self, request):
+        """多论文对比分析接口: POST /api/papers/analyze_multi/"""
+        paper_ids = request.data.get('paper_ids', [])
+        question = request.data.get('question', '').strip()
+
+        if len(paper_ids) < 2:
+            return Response({"error": "请至少选择两篇论文"}, status=status.HTTP_400_BAD_REQUEST)
+        if not question:
+            return Response({"error": "问题不能为空"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 验证论文属于当前用户且均已处理
+        papers = Paper.objects.filter(id__in=paper_ids, user=request.user)
+        if papers.count() != len(paper_ids):
+            return Response({"error": "部分论文不存在或无权访问"}, status=status.HTTP_400_BAD_REQUEST)
+
+        not_ready = [p.title for p in papers if not p.is_processed]
+        if not_ready:
+            return Response(
+                {"error": f"以下论文尚未完成解析：{', '.join(not_ready)}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        paper_ids_titles = [(p.id, p.title) for p in papers]
+        paper_metadata = {
+            p.id: {
+                "title": p.meta_title,
+                "abstract": p.meta_abstract,
+                "keywords": p.meta_keywords,
+            }
+            for p in papers
+        }
+        result = analyze_multiple_papers(paper_ids_titles, question, paper_metadata)
+        return Response({"question": question, **result})
