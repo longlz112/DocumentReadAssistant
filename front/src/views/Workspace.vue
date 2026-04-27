@@ -42,7 +42,8 @@
       <div class="qa-header">AI 问答</div>
       <div class="chat-box" ref="chatBox">
         <div v-for="(msg, index) in chatHistory" :key="index" :class="['message', msg.role]">
-          <div class="msg-bubble">{{ msg.content }}</div>
+          <div v-if="msg.role === 'ai'" class="msg-bubble markdown-body" v-html="renderMarkdown(msg.content)" />
+          <div v-else class="msg-bubble">{{ msg.content }}</div>
         </div>
         <div v-if="asking" class="message ai">
           <div class="msg-bubble loading">AI思考中...</div>
@@ -70,6 +71,7 @@ import { ElMessage } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import api from '../api'
+import { renderMarkdown } from '../utils/markdown.js'
 
 const props = defineProps({
   paper: Object,

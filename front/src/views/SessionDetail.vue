@@ -51,7 +51,8 @@
                 <span class="kw-label">检索关键词：</span>
                 <el-tag v-for="kw in msg.keywords" :key="kw" size="small" type="info" style="margin-right:4px">{{ kw }}</el-tag>
               </div>
-              <div class="msg-content">{{ msg.content }}</div>
+              <div v-if="msg.role === 'assistant'" class="msg-content markdown-body" v-html="renderMarkdown(msg.content)" />
+              <div v-else class="msg-content">{{ msg.content }}</div>
               <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
             </div>
           </div>
@@ -67,6 +68,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Edit, Loading } from '@element-plus/icons-vue'
 import api from '../api/index.js'
+import { renderMarkdown } from '../utils/markdown.js'
 
 const route = useRoute()
 const session = ref({ title: '', messages: [] })

@@ -18,21 +18,15 @@
     <div class="chat-box" ref="chatBox">
       <div v-for="(msg, index) in chatHistory" :key="index" :class="['message', msg.role]">
         <div class="msg-bubble">
-          <!-- AI 消息展示关键词 + 正文 -->
           <template v-if="msg.role === 'ai' && msg.keywords && msg.keywords.length">
             <div class="keywords-row">
               <span class="kw-label">检索关键词：</span>
-              <el-tag
-                  v-for="kw in msg.keywords"
-                  :key="kw"
-                  size="small"
-                  type="info"
-                  class="kw-tag"
-              >{{ kw }}</el-tag>
+              <el-tag v-for="kw in msg.keywords" :key="kw" size="small" type="info" class="kw-tag">{{ kw }}</el-tag>
             </div>
             <div class="divider"></div>
           </template>
-          {{ msg.content }}
+          <div v-if="msg.role === 'ai'" class="markdown-body" v-html="renderMarkdown(msg.content)" />
+          <template v-else>{{ msg.content }}</template>
         </div>
       </div>
       <div v-if="analyzing" class="message ai">
@@ -66,6 +60,7 @@
 import { ref, watch, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
+import { renderMarkdown } from '../utils/markdown.js'
 
 const props = defineProps({
   selectedPapers: {

@@ -26,13 +26,3 @@ class Paper(models.Model):
     def __str__(self):
         return self.title
 
-
-class Note(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notes')
-    paper = models.ForeignKey(Paper, on_delete=models.CASCADE, related_name='notes')
-    content = models.TextField()
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"Note on {self.paper.title} by {self.user.username}"
