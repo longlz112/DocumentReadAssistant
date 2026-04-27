@@ -79,11 +79,13 @@ const chatBox = ref(null)
 const question = ref('')
 const analyzing = ref(false)
 const chatHistory = ref([])
+let currentSessionId = null  // 当前多论文分析会话 _id
 
-// 论文列表变化时提示用户
+// 论文列表变化时重置会话（新的论文组合 = 新会话）
 watch(
     () => props.selectedPapers.map(p => p.id).join(','),
     () => {
+      currentSessionId = null
       if (props.selectedPapers.length >= 2) {
         chatHistory.value.push({
           role: 'ai',
@@ -118,20 +120,40 @@ const sendQuestion = async () => {
   analyzing.value = true
   scrollToBottom()
 
+  // 首次提问时创建多论文分析会话
+  if (!currentSessionId) {
+    try {
+      const titles = props.selectedPapers.map(p => p.title)
+      const sessionTitle = `多论文分析：${titles.slice(0, 2).join('、')}${titles.length > 2 ? '等' : ''}`
+      const sessionRes = await api.createSession({
+        title: sessionTitle,
+        session_type: 'multi',
+        paper_titles: titles,
+      })
+      currentSessionId = sessionRes.data.id
+    } catch {
+      // 会话创建失败不阻断问答
+    }
+  }
+
+  // 保存用户消息
+  if (currentSessionId) {
+    api.addMessage(currentSessionId, 'user', qText).catch(() => {})
+  }
+
   try {
     const ids = props.selectedPapers.map(p => p.id)
     const res = await api.analyzeMultiple(ids, qText)
-    chatHistory.value.push({
-      role: 'ai',
-      content: res.data.answer,
-      keywords: res.data.keywords || [],
-    })
+    const answer = res.data.answer
+    const keywords = res.data.keywords || []
+    chatHistory.value.push({ role: 'ai', content: answer, keywords })
+
+    // 保存 AI 回复（含关键词）
+    if (currentSessionId) {
+      api.addMessage(currentSessionId, 'assistant', answer, keywords).catch(() => {})
+    }
   } catch (error) {
-    chatHistory.value.push({
-      role: 'ai',
-      content: '抱歉，请求失败，请检查系统日志。',
-      keywords: [],
-    })
+    chatHistory.value.push({ role: 'ai', content: '抱歉，请求失败，请检查系统日志。', keywords: [] })
   } finally {
     analyzing.value = false
     scrollToBottom()

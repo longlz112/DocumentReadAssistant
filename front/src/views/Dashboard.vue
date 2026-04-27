@@ -58,7 +58,8 @@
       </el-menu>
 
       <div class="logout-btn">
-        <el-button text @click="logout">退出登录 ({{ username }})</el-button>
+        <el-button text :icon="User" @click="$router.push('/user-center')">{{ username }}</el-button>
+        <el-button text @click="logout">退出登录</el-button>
       </div>
     </el-aside>
 
@@ -124,7 +125,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Plus, Document, Grid } from '@element-plus/icons-vue'
+import { Plus, Document, Grid, User } from '@element-plus/icons-vue'
 import api from '../api'
 import Workspace from './Workspace.vue'
 import MultiAnalysis from './MultiAnalysis.vue'

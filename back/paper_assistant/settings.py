@@ -106,3 +106,7 @@ DATABASES = {
 }
 
 X_FRAME_OPTIONS = 'ALLOWALL'
+
+# MongoDB（会话记录）
+MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017')
+MONGODB_DB = os.getenv('MONGODB_DB', 'paper_assistant')

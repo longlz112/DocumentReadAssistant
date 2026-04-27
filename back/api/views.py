@@ -1,12 +1,18 @@
 from rest_framework import viewsets, status, views, serializers
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from .models import Paper
-from .serializers import PaperSerializer
+from .serializers import PaperSerializer, UserSerializer
 from .ai_service import process_paper_to_vector_db, ask_paper_question, analyze_multiple_papers, extract_paper_metadata, build_knowledge_graph
+from .mongo import get_sessions_collection
 import threading
+import uuid
+import math
+from datetime import datetime, timezone as dt_timezone
+from bson import ObjectId
 from django.utils import timezone
 from django.contrib.auth import authenticate
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 from django.contrib.auth.models import User
@@ -256,3 +262,198 @@ class PaperViewSet(viewsets.ModelViewSet):
             "status": paper.knowledge_graph_status,
             "data": paper.knowledge_graph_data,
         })
+
+
+# 用户个人信息接口
+class UserProfileView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        serializer = UserSerializer(request.user)
+        return Response(serializer.data)
+
+    def put(self, request):
+        user = request.user
+        data = request.data
+
+        # 修改昵称（first_name）
+        if 'nickname' in data:
+            user.first_name = data['nickname']
+
+        # 修改邮箱
+        if 'email' in data:
+            email = data['email']
+            if email and User.objects.exclude(pk=user.pk).filter(email=email).exists():
+                return Response({"error": "该邮箱已被其他账号使用"}, status=status.HTTP_400_BAD_REQUEST)
+            user.email = email
+
+        # 修改密码
+        if 'new_password' in data and data['new_password']:
+            old_password = data.get('old_password', '')
+            if not user.check_password(old_password):
+                return Response({"error": "当前密码不正确"}, status=status.HTTP_400_BAD_REQUEST)
+            if len(data['new_password']) < 6:
+                return Response({"error": "新密码长度不能少于6位"}, status=status.HTTP_400_BAD_REQUEST)
+            user.set_password(data['new_password'])
+            # 密码修改后重新生成 token，使旧 token 失效
+            Token.objects.filter(user=user).delete()
+            token, _ = Token.objects.get_or_create(user=user)
+            user.save()
+            return Response({**UserSerializer(user).data, "new_token": token.key, "password_changed": True})
+
+        user.save()
+        return Response(UserSerializer(user).data)
+
+
+# 会话管理接口（使用 MongoDB）
+class ChatSessionViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    # ── 工具方法 ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(dt_timezone.utc).isoformat()
+
+    @staticmethod
+    def _serialize(doc: dict, include_messages: bool = True) -> dict:
+        """将 MongoDB 文档转为可序列化的 dict。"""
+        result = {
+            "id": str(doc["_id"]),
+            "session_id": doc.get("session_id", ""),
+            "title": doc.get("title", "新会话"),
+            "session_type": doc.get("session_type", "single"),
+            "paper_titles": doc.get("paper_titles", []),
+            "created_at": doc.get("created_at", ""),
+            "updated_at": doc.get("updated_at", ""),
+        }
+        if include_messages:
+            result["messages"] = doc.get("messages", [])
+        else:
+            # message_count 由聚合管道注入，非聚合查询时回退计算
+            result["message_count"] = doc.get("message_count", len(doc.get("messages", [])))
+        return result
+
+    def _get_doc_or_404(self, pk: str, user_id: int) -> dict:
+        col = get_sessions_collection()
+        try:
+            oid = ObjectId(pk)
+        except Exception:
+            return None
+        return col.find_one({"_id": oid, "user_id": user_id})
+
+    # ── CRUD ──────────────────────────────────────────────────────
+
+    def list(self, request):
+        """GET /api/sessions/  分页返回当前用户的会话列表（不含 messages，服务端计算消息数）"""
+        page = max(int(request.query_params.get("page", 1)), 1)
+        page_size = min(int(request.query_params.get("page_size", 10)), 50)
+
+        col = get_sessions_collection()
+        match = {"user_id": request.user.id}
+        total = col.count_documents(match)
+        skip = (page - 1) * page_size
+
+        # 用聚合管道在服务端计算 message_count，避免把 messages 数组传到 Python 再算长度
+        docs = list(col.aggregate([
+            {"$match": match},
+            {"$sort": {"updated_at": -1}},
+            {"$skip": skip},
+            {"$limit": page_size},
+            {"$addFields": {"message_count": {"$size": "$messages"}}},
+            {"$project": {"messages": 0}},
+        ]))
+
+        return Response({
+            "count": total,
+            "total_pages": math.ceil(total / page_size) if page_size else 1,
+            "page": page,
+            "results": [self._serialize(d, include_messages=False) for d in docs],
+        })
+
+    def create(self, request):
+        """POST /api/sessions/  新建会话"""
+        title = (request.data.get("title") or "新会话").strip()[:100]
+        session_type = request.data.get("session_type", "single")  # single | multi
+        paper_titles = request.data.get("paper_titles", [])
+        now = self._now_iso()
+        doc = {
+            "user_id": request.user.id,
+            "session_id": str(uuid.uuid4()),
+            "title": title,
+            "session_type": session_type,
+            "paper_titles": paper_titles,
+            "messages": [],
+            "created_at": now,
+            "updated_at": now,
+        }
+        result = get_sessions_collection().insert_one(doc)
+        doc["_id"] = result.inserted_id
+        return Response(self._serialize(doc), status=status.HTTP_201_CREATED)
+
+    def retrieve(self, request, pk=None):
+        """GET /api/sessions/{id}/  会话详情（含 messages）"""
+        doc = self._get_doc_or_404(pk, request.user.id)
+        if doc is None:
+            return Response({"error": "会话不存在"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self._serialize(doc, include_messages=True))
+
+    def partial_update(self, request, pk=None):
+        """PATCH /api/sessions/{id}/  修改标题"""
+        doc = self._get_doc_or_404(pk, request.user.id)
+        if doc is None:
+            return Response({"error": "会话不存在"}, status=status.HTTP_404_NOT_FOUND)
+
+        update = {}
+        if "title" in request.data:
+            update["title"] = (request.data["title"] or "新会话").strip()[:100]
+        if not update:
+            return Response({"error": "没有可更新的字段"}, status=status.HTTP_400_BAD_REQUEST)
+
+        update["updated_at"] = self._now_iso()
+        get_sessions_collection().update_one({"_id": doc["_id"]}, {"$set": update})
+        doc.update(update)
+        return Response(self._serialize(doc, include_messages=False))
+
+    def destroy(self, request, pk=None):
+        """DELETE /api/sessions/{id}/"""
+        doc = self._get_doc_or_404(pk, request.user.id)
+        if doc is None:
+            return Response({"error": "会话不存在"}, status=status.HTTP_404_NOT_FOUND)
+        get_sessions_collection().delete_one({"_id": doc["_id"]})
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"], url_path="add_message")
+    def add_message(self, request, pk=None):
+        """POST /api/sessions/{id}/add_message/  追加一条消息"""
+        doc = self._get_doc_or_404(pk, request.user.id)
+        if doc is None:
+            return Response({"error": "会话不存在"}, status=status.HTTP_404_NOT_FOUND)
+
+        role = request.data.get("role")
+        content = (request.data.get("content") or "").strip()
+
+        if role not in ("user", "assistant"):
+            return Response({"error": "role 必须为 user 或 assistant"}, status=status.HTTP_400_BAD_REQUEST)
+        if not content:
+            return Response({"error": "消息内容不能为空"}, status=status.HTTP_400_BAD_REQUEST)
+
+        message = {"role": role, "content": content, "timestamp": self._now_iso()}
+        # 多论文分析时 AI 消息可携带检索关键词
+        keywords = request.data.get("keywords")
+        if keywords and isinstance(keywords, list):
+            message["keywords"] = keywords
+
+        set_fields: dict = {"updated_at": self._now_iso()}
+        # 首条用户消息自动生成标题
+        if role == "user" and doc.get("title") == "新会话" and len(doc.get("messages", [])) == 0:
+            set_fields["title"] = content[:20] + ("..." if len(content) > 20 else "")
+
+        col = get_sessions_collection()
+        col.update_one(
+            {"_id": doc["_id"]},
+            {"$push": {"messages": message}, "$set": set_fields},
+        )
+        updated = col.find_one({"_id": doc["_id"]})
+        return Response(self._serialize(updated, include_messages=True))
+

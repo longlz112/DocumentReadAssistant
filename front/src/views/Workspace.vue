@@ -80,10 +80,11 @@ const chatBox = ref(null)
 const question = ref('')
 const asking = ref(false)
 const chatHistory = ref([])
+let currentSessionId = null  // 当前会话在 MongoDB 中的 _id
 
 watch(() => props.paper.id, () => {
   chatHistory.value = []
-  // 切换论文时重置图谱状态
+  currentSessionId = null   // 切换论文时开启新会话
   graphStatus.value = props.paper.knowledge_graph_status || ''
   activeTab.value = 'pdf'
   stopPolling()
@@ -110,9 +111,30 @@ const askQuestion = async () => {
   asking.value = true
   scrollToBottom()
 
+  // 首次提问时创建会话（标题取论文名）
+  if (!currentSessionId) {
+    try {
+      const sessionRes = await api.createSession({ title: props.paper.title || '新会话' })
+      currentSessionId = sessionRes.data.id
+    } catch {
+      // 会话创建失败不阻断问答，静默处理
+    }
+  }
+
+  // 保存用户消息
+  if (currentSessionId) {
+    api.addMessage(currentSessionId, 'user', qText).catch(() => {})
+  }
+
   try {
     const res = await api.askQuestion(props.paper.id, qText)
-    chatHistory.value.push({ role: 'ai', content: res.data.answer })
+    const answer = res.data.answer
+    chatHistory.value.push({ role: 'ai', content: answer })
+
+    // 保存 AI 回复
+    if (currentSessionId) {
+      api.addMessage(currentSessionId, 'assistant', answer).catch(() => {})
+    }
   } catch {
     chatHistory.value.push({ role: 'ai', content: '抱歉，请求失败，请检查系统日志。' })
   } finally {

@@ -36,4 +36,16 @@ export default {
     // 知识图谱
     buildKnowledgeGraph: (paperId) => api.post(`papers/${paperId}/build_knowledge_graph/`),
     getKnowledgeGraph: (paperId) => api.get(`papers/${paperId}/knowledge_graph/`),
+
+    // 用户个人信息
+    getUserProfile: () => api.get('user/profile/'),
+    updateUserProfile: (data) => api.put('user/profile/', data),
+
+    // 会话记录
+    getSessions: (page = 1, pageSize = 10) => api.get('sessions/', { params: { page, page_size: pageSize } }),
+    getSession: (id) => api.get(`sessions/${id}/`),
+    createSession: (data) => api.post('sessions/', data),
+    updateSession: (id, data) => api.patch(`sessions/${id}/`, data),
+    deleteSession: (id) => api.delete(`sessions/${id}/`),
+    addMessage: (id, role, content, keywords) => api.post(`sessions/${id}/add_message/`, { role, content, ...(keywords ? { keywords } : {}) }),
 }
