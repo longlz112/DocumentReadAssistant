@@ -1,13 +1,14 @@
 from rest_framework import viewsets, status, views, serializers
 from rest_framework.decorators import action
-from rest_framework.pagination import PageNumberPagination
 from .models import Paper
 from .serializers import PaperSerializer, UserSerializer
-from .ai_service import process_paper_to_vector_db, ask_paper_question, analyze_multiple_papers, extract_paper_metadata, build_knowledge_graph
+from .ai_service import process_paper_to_vector_db, ask_paper_question, analyze_multiple_papers, extract_paper_metadata, build_knowledge_graph, _thread_local
 from .mongo import get_sessions_collection
 import threading
 import uuid
 import math
+import os
+import shutil
 from datetime import datetime, timezone as dt_timezone
 from bson import ObjectId
 from django.utils import timezone
@@ -80,25 +81,28 @@ class PaperViewSet(viewsets.ModelViewSet):
         paper = serializer.save(user=self.request.user, title=self.request.data.get('title', 'Untitled'))
 
         # 2. 异步处理PDF以防阻塞请求
-        def process_task():
-            success = process_paper_to_vector_db(paper.file.path, paper.id)
+        def process_task(p):
+            success = process_paper_to_vector_db(p.file.path, p.id)
             if success:
-                paper.is_processed = True
-                paper.save()
-            # 提取元数据（不影响 is_processed 状态）
-            meta = extract_paper_metadata(paper.file.path)
-            paper.meta_title = meta["title"]
-            paper.meta_authors = meta["authors"]
-            paper.meta_keywords = meta["keywords"]
-            paper.meta_abstract = meta["abstract"]
-            paper.meta_journal = meta["journal"]
-            paper.meta_year = meta["year"]
-            paper.save(update_fields=[
-                'meta_title', 'meta_authors', 'meta_keywords',
-                'meta_abstract', 'meta_journal', 'meta_year',
-            ])
+                meta = extract_paper_metadata(p.file.path)
+                p.meta_title = meta["title"]
+                p.meta_authors = meta["authors"]
+                p.meta_keywords = meta["keywords"]
+                p.meta_abstract = meta["abstract"]
+                p.meta_journal = meta["journal"]
+                p.meta_year = meta["year"]
+                p.is_processed = True
+                p.processing_failed = False
+                p.save(update_fields=[
+                    'meta_title', 'meta_authors', 'meta_keywords',
+                    'meta_abstract', 'meta_journal', 'meta_year',
+                    'is_processed', 'processing_failed',
+                ])
+            else:
+                p.processing_failed = True
+                p.save(update_fields=['processing_failed'])
 
-        thread = threading.Thread(target=process_task)
+        thread = threading.Thread(target=process_task, args=(paper,))
         thread.start()
 
     @action(detail=True, methods=['post'])
@@ -122,10 +126,50 @@ class PaperViewSet(viewsets.ModelViewSet):
         """查询论文处理状态接口: GET /api/papers/{id}/status/"""
         paper = self.get_object()
 
-        if paper.is_processed:
+        if paper.processing_failed:
+            return Response({"status": "error", "message": "论文解析失败，请重新解析。"})
+        elif paper.is_processed:
             return Response({"status": "processed", "message": "The paper has been processed."})
         else:
             return Response({"status": "processing", "message": "The paper is still being processed."})
+
+    @action(detail=True, methods=['post'], url_path='reparse')
+    def reparse(self, request, pk=None):
+        """重新解析论文: POST /api/papers/{id}/reparse/"""
+        paper = self.get_object()
+
+        if paper.is_processed:
+            return Response({"error": "论文已成功解析，无需重新解析。"}, status=status.HTTP_400_BAD_REQUEST)
+        if not paper.processing_failed:
+            return Response({"error": "论文正在解析中，请稍候。"}, status=status.HTTP_400_BAD_REQUEST)
+
+        paper.processing_failed = False
+        paper.save(update_fields=['processing_failed'])
+
+        def process_task(p):
+            success = process_paper_to_vector_db(p.file.path, p.id)
+            if success:
+                meta = extract_paper_metadata(p.file.path)
+                p.meta_title = meta["title"]
+                p.meta_authors = meta["authors"]
+                p.meta_keywords = meta["keywords"]
+                p.meta_abstract = meta["abstract"]
+                p.meta_journal = meta["journal"]
+                p.meta_year = meta["year"]
+                p.is_processed = True
+                p.processing_failed = False
+                p.save(update_fields=[
+                    'meta_title', 'meta_authors', 'meta_keywords',
+                    'meta_abstract', 'meta_journal', 'meta_year',
+                    'is_processed', 'processing_failed',
+                ])
+            else:
+                p.processing_failed = True
+                p.save(update_fields=['processing_failed'])
+
+        thread = threading.Thread(target=process_task, args=(paper,))
+        thread.start()
+        return Response({"message": "已重新开始解析，请稍候。"})
 
     @action(detail=True, methods=['get'])
     def metadata(self, request, pk=None):
@@ -262,6 +306,19 @@ class PaperViewSet(viewsets.ModelViewSet):
             "status": paper.knowledge_graph_status,
             "data": paper.knowledge_graph_data,
         })
+
+    def perform_destroy(self, instance):
+        """删���论文时同步清理 PDF 文件和 Chroma 向量库目录"""
+        from django.conf import settings
+        chroma_path = os.path.join(settings.BASE_DIR, 'chroma_db', f'paper_{instance.id}')
+        if os.path.exists(chroma_path):
+            shutil.rmtree(chroma_path)
+        try:
+            if instance.file and os.path.exists(instance.file.path):
+                os.remove(instance.file.path)
+        except Exception:
+            pass
+        instance.delete()
 
 
 # 用户个人信息接口

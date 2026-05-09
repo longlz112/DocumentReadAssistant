@@ -19,6 +19,9 @@
             <el-button :icon="Edit" text size="small" @click="startEditTitle" />
           </template>
         </div>
+        <el-button :icon="Download" size="small" @click="handleExport" :disabled="loading">
+          导出 Markdown
+        </el-button>
       </div>
 
       <el-card shadow="never" class="chat-card">
@@ -66,9 +69,10 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, Edit, Loading } from '@element-plus/icons-vue'
+import { ArrowLeft, Edit, Loading, Download } from '@element-plus/icons-vue'
 import api from '../api/index.js'
 import { renderMarkdown } from '../utils/markdown.js'
+import { exportSessionAsMarkdown } from '../utils/export.js'
 
 const route = useRoute()
 const session = ref({ title: '', messages: [] })
@@ -122,6 +126,10 @@ function formatTime(iso) {
     hour: '2-digit', minute: '2-digit',
   })
 }
+
+function handleExport() {
+  exportSessionAsMarkdown(session.value)
+}
 </script>
 
 <style scoped>
@@ -141,6 +149,10 @@ function formatTime(iso) {
   align-items: center;
   gap: 12px;
   margin-bottom: 24px;
+}
+
+.page-header .title-area {
+  flex: 1;
 }
 
 .title-area {
@@ -228,7 +240,6 @@ function formatTime(iso) {
   padding: 10px 14px;
   font-size: 14px;
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-word;
 }
 

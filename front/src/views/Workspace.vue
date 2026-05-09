@@ -73,6 +73,7 @@ import * as echarts from 'echarts'
 import api from '../api'
 import { renderMarkdown } from '../utils/markdown.js'
 
+
 const props = defineProps({
   paper: Object,
 })
@@ -185,6 +186,19 @@ const renderGraph = (graphData) => {
         top: 8,
         textStyle: { fontSize: 12 },
       },
+      toolbox: {
+        show: true,
+        top: 'center',         // 可选: 'top', 'middle', 'bottom', 或数值 10
+        feature: {
+          saveAsImage: {
+            show: true,
+            type: 'png',  // 支持'png'、'jpg'、'svg'
+            name: '图表名称',
+            backgroundColor: '#fff',
+            pixelRatio: 2  // 提高图片分辨率
+          }
+        }
+      },
       series: [{
         type: 'graph',
         layout: 'force',
@@ -277,6 +291,7 @@ onUnmounted(() => {
   stopPolling()
   if (chartInstance) chartInstance.dispose()
 })
+
 </script>
 
 <style scoped>
@@ -344,6 +359,13 @@ onUnmounted(() => {
 .chart-wrapper {
   width: 100%;
   height: 100%;
+  position: relative;
+}
+.export-graph-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
 }
 .echarts-container {
   width: 100%;
@@ -378,7 +400,6 @@ onUnmounted(() => {
   padding: 10px 14px;
   border-radius: 8px;
   line-height: 1.5;
-  white-space: pre-wrap;
   font-size: 14px;
 }
 .user .msg-bubble { background-color: #95ec69; color: #000; }

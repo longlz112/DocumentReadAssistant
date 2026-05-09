@@ -6,3 +6,4 @@ langchain-core>=1.2.23
 langchain-experimental>=0.3.0
 langchain-neo4j>=0.4.0
 pymongo>=4.7.0
+psutil>=5.9.0

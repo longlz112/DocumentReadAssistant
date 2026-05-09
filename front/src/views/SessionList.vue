@@ -37,8 +37,16 @@
             <el-table-column label="最后更新" width="170" align="center">
               <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="100" align="center">
+            <el-table-column label="操作" width="140" align="center">
               <template #default="{ row }">
+                <el-button
+                  :icon="Download"
+                  size="small"
+                  text
+                  title="导出 Markdown"
+                  :loading="exportingId === row.id"
+                  @click="exportSession(row)"
+                />
                 <el-popconfirm title="确认删除该会话？" @confirm="deleteSession(row.id)">
                   <template #reference>
                     <el-button :icon="Delete" type="danger" size="small" text />
@@ -67,14 +75,16 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, Delete, Loading } from '@element-plus/icons-vue'
+import { ArrowLeft, Delete, Loading, Download } from '@element-plus/icons-vue'
 import api from '../api/index.js'
+import { exportSessionAsMarkdown } from '../utils/export.js'
 
 const sessions = ref([])
 const loading = ref(false)
 const total = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(10)
+const exportingId = ref(null)
 
 onMounted(() => fetchSessions())
 
@@ -103,6 +113,18 @@ async function deleteSession(id) {
     fetchSessions(currentPage.value)
   } catch {
     ElMessage.error('删除失败')
+  }
+}
+
+async function exportSession(row) {
+  exportingId.value = row.id
+  try {
+    const res = await api.getSession(row.id)
+    exportSessionAsMarkdown(res.data)
+  } catch {
+    ElMessage.error('导出失败')
+  } finally {
+    exportingId.value = null
   }
 }
 

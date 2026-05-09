@@ -2,6 +2,7 @@
 import os
 import json
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from django.conf import settings
 from langchain_community.document_loaders import PyPDFLoader
@@ -11,8 +12,45 @@ from langchain_community.chat_models.tongyi import ChatTongyi
 from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
+from langchain_core.callbacks import BaseCallbackHandler
 
 logger = logging.getLogger(__name__)
+
+_thread_local = threading.local()
+
+
+class _UsageLogger(BaseCallbackHandler):
+    def __init__(self, operation='unknown'):
+        super().__init__()
+        self.operation = operation
+
+    def on_llm_end(self, response, **kwargs):
+        try:
+            # ChatTongyi stores token_usage in generation_info, not in llm_output
+            usage = {}
+            if response.generations:
+                gen_info = getattr(response.generations[0][0], 'generation_info', None) or {}
+                usage = gen_info.get('token_usage') or {}
+            if not usage:
+                llm_output = response.llm_output or {}
+                usage = llm_output.get('token_usage') or llm_output.get('usage') or {}
+
+            input_t = usage.get('input_tokens', 0)
+            output_t = usage.get('output_tokens', 0)
+            total_t = usage.get('total_tokens', input_t + output_t)
+            if total_t > 0 or input_t > 0:
+                from .models import LLMUsageRecord
+                LLMUsageRecord.objects.create(
+                    model_name='qwen-plus',
+                    operation=self.operation,
+                    input_tokens=input_t,
+                    output_tokens=output_t,
+                    total_tokens=total_t,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to log LLM usage: {e}", exc_info=True)
+
+
 
 # 测试用，用于手动解析pdf
 # from pathlib import Path
@@ -38,8 +76,9 @@ def _get_embeddings():
     return DashScopeEmbeddings(model="text-embedding-v4")
 
 
-def _get_llm():
-    return ChatTongyi(model="qwen-plus")
+def _get_llm(operation):
+    _usage_logger = _UsageLogger(operation=operation)
+    return ChatTongyi(model="qwen-plus", callbacks=[_usage_logger])
 
 
 def extract_paper_metadata(file_path):
@@ -56,7 +95,7 @@ def extract_paper_metadata(file_path):
         head_text = "\n".join(doc.page_content for doc in documents[:3])
         head_text = head_text[:4000]  # 截断避免超出 token 限制
 
-        llm = _get_llm()
+        llm = _get_llm("metadata")
         prompt = ChatPromptTemplate.from_template(
             """你是学术论文信息提取助手。请从以下论文文本中提取元数据，以 JSON 格式输出，不要有其他文字。
 
@@ -152,7 +191,7 @@ def ask_paper_question(paper_id, question):
         )
 
         # 配置大模型和检索器
-        llm = _get_llm()
+        llm = _get_llm("single")
         retriever = vector_db.as_retriever(search_kwargs={"k": 3})  # 检索前3个相关分块
 
         # prompt模板
@@ -199,7 +238,7 @@ def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None):
     paper_metadata: dict {paper_id: {"title": ..., "abstract": ..., "keywords": ...}}
     """
     try:
-        llm = _get_llm()
+        llm = _get_llm("multi")
         embeddings = _get_embeddings()
 
         # ── 第一阶段：让 LLM 根据问题和论文元数据生成检索关键词 ──────────────────
@@ -408,7 +447,7 @@ def build_knowledge_graph(file_path, paper_id):
         )
 
         # 2. LLM 抽取图谱
-        llm = _get_llm()
+        llm = _get_llm("build_KG")
         transformer = LLMGraphTransformer(llm=llm)
         graph_documents = transformer.convert_to_graph_documents([doc])
 

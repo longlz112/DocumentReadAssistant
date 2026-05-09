@@ -8,6 +8,7 @@ class Paper(models.Model):
     file = models.FileField(upload_to='papers/')
     uploaded_at = models.DateTimeField(auto_now_add=True)
     is_processed = models.BooleanField(default=False)
+    processing_failed = models.BooleanField(default=False)
 
     # 论文元数据字段
     meta_title = models.CharField(max_length=500, default='无', blank=True)
@@ -25,4 +26,17 @@ class Paper(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class LLMUsageRecord(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True)
+    model_name = models.CharField(max_length=100, default='qwen-plus')
+    operation = models.CharField(max_length=100, default='')
+    input_tokens = models.IntegerField(default=0)
+    output_tokens = models.IntegerField(default=0)
+    total_tokens = models.IntegerField(default=0)
+    request_id = models.CharField(max_length=200, blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at']
 

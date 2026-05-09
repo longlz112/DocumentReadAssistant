@@ -190,7 +190,6 @@ const sendQuestion = async () => {
   padding: 10px 14px;
   border-radius: 8px;
   line-height: 1.6;
-  white-space: pre-wrap;
   font-size: 14px;
 }
 .user .msg-bubble { background-color: #95ec69; color: #000; }

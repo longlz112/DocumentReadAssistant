@@ -24,8 +24,10 @@ export default {
     uploadPaper: (formData) => api.post('papers/', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
     }),
+    deletePaper: (paperId) => api.delete(`papers/${paperId}/`),
     askQuestion: (paperId, question) => api.post(`papers/${paperId}/ask/`, { question }),
     pollingStatus: (paperId) => api.get(`papers/${paperId}/status/`),
+    reparsePaper: (paperId) => api.post(`papers/${paperId}/reparse/`),
     analyzeMultiple: (paperIds, question) => api.post('papers/analyze_multi/', { paper_ids: paperIds, question }),
 
     // 元数据

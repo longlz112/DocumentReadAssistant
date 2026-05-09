@@ -52,8 +52,27 @@
           />
           <el-icon v-else><Document /></el-icon>
           <span class="paper-title" :title="paper.title">{{ paper.title }}</span>
-          <el-tag v-if="!paper.is_processed" size="small" type="warning" class="ms-auto">解析中</el-tag>
-          <el-tag v-else-if="!paper.meta_confirmed" size="small" type="info" class="ms-auto">待确认</el-tag>
+          <span class="paper-right">
+            <el-tag v-if="paper.processing_failed" size="small" type="danger">出现错误</el-tag>
+            <el-tag v-else-if="!paper.is_processed" size="small" type="warning">解析中</el-tag>
+            <el-tag v-else-if="!paper.meta_confirmed" size="small" type="info">待确认</el-tag>
+            <span v-if="!multiMode" class="paper-actions" @click.stop>
+              <el-tooltip v-if="paper.is_processed && !paper.processing_failed" content="查看元数据" placement="top">
+                <el-button size="small" link :icon="InfoFilled" @click.stop="openMetaDialog(paper.id)" />
+              </el-tooltip>
+              <el-tooltip content="删除" placement="top">
+                <el-button size="small" link type="danger" :icon="Delete" @click.stop="handleDeletePaper(paper)" />
+              </el-tooltip>
+            </span>
+            <el-button
+                v-if="paper.processing_failed"
+                size="small"
+                type="danger"
+                link
+                class="reparse-btn"
+                @click.stop="handleReparse(paper)"
+            >重新解析</el-button>
+          </span>
         </el-menu-item>
       </el-menu>
 
@@ -81,11 +100,11 @@
     <!-- 元数据确认弹窗 -->
     <el-dialog
         v-model="metaDialogVisible"
-        title="论文元数据确认"
+        title="论文元数据"
         width="600px"
-        :close-on-click-modal="false"
-        :close-on-press-escape="false"
-        :show-close="false"
+        :close-on-click-modal="true"
+        :close-on-press-escape="true"
+        :show-close="true"
     >
       <p class="meta-hint">以下是自动提取的元数据，请确认或修正后保存。</p>
       <el-form :model="metaForm" label-width="90px" label-position="left">
@@ -124,8 +143,8 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { Plus, Document, Grid, User } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Document, Grid, User, Delete, InfoFilled } from '@element-plus/icons-vue'
 import api from '../api'
 import Workspace from './Workspace.vue'
 import MultiAnalysis from './MultiAnalysis.vue'
@@ -171,11 +190,26 @@ const checkPaperStatus = async (paperId) => {
         // 解析完成后弹出元数据确认窗
         openMetaDialog(paperId)
         break
+      } else if (res.data.status === 'error') {
+        await fetchPapers()
+        ElMessage.error('论文解析失败，请点击"重新解析"按钮重试')
+        break
       }
     } catch (error) {
       console.log(error)
     }
     await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+}
+
+const handleReparse = async (paper) => {
+  try {
+    await api.reparsePaper(paper.id)
+    await fetchPapers()
+    ElMessage.success('已重新开始解析，请稍候...')
+    checkPaperStatus(paper.id)
+  } catch (error) {
+    ElMessage.error('重新解析请求失败')
   }
 }
 
@@ -303,6 +337,33 @@ const openMultiAnalysis = () => {
   currentPaper.value = null
 }
 
+const handleDeletePaper = async (paper) => {
+  try {
+    await ElMessageBox.confirm(
+        `确定要删除论文「${paper.title}」吗？此操作将同时删除相关向量数据，不可恢复。`,
+        '删除确认',
+        { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api.deletePaper(paper.id)
+    ElMessage.success('论文已删除')
+    if (currentPaper.value?.id === paper.id) {
+      currentPaper.value = null
+      activePaperId.value = ''
+    }
+    selectedPapers.value = selectedPapers.value.filter(p => p.id !== paper.id)
+    if (selectedPapers.value.length < 2 && showMultiAnalysis.value) {
+      showMultiAnalysis.value = false
+    }
+    await fetchPapers()
+  } catch {
+    ElMessage.error('删除失败')
+  }
+}
+
 const logout = () => {
   localStorage.removeItem('token')
   localStorage.removeItem('username')
@@ -347,12 +408,31 @@ onMounted(() => {
 .paper-menu { flex-grow: 1; overflow-y: auto; border-right: none; }
 .paper-title {
   display: inline-block;
-  max-width: 180px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .ms-auto { margin-left: auto; }
+.paper-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.paper-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+:deep(.el-menu-item:hover) .paper-actions {
+  opacity: 1;
+}
+.reparse-btn { padding: 0; }
 .multi-checkbox { margin-right: 8px; flex-shrink: 0; }
 .is-selected-multi { background-color: #ecf5ff !important; }
 

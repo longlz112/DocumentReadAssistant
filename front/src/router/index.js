@@ -4,6 +4,13 @@ import Dashboard from '../views/Dashboard.vue'
 import UserCenter from '../views/UserCenter.vue'
 import SessionList from '../views/SessionList.vue'
 import SessionDetail from '../views/SessionDetail.vue'
+import AdminLogin from '../views/admin/AdminLogin.vue'
+import AdminLayout from '../views/admin/AdminLayout.vue'
+import AdminDashboard from '../views/admin/AdminDashboard.vue'
+import AdminUsers from '../views/admin/AdminUsers.vue'
+import AdminPapers from '../views/admin/AdminPapers.vue'
+import AdminMonitor from '../views/admin/AdminMonitor.vue'
+import AdminLLM from '../views/admin/AdminLLM.vue'
 
 const routes = [
     { path: '/login', component: Login },
@@ -11,6 +18,20 @@ const routes = [
     { path: '/user-center', component: UserCenter, meta: { requiresAuth: true } },
     { path: '/sessions', component: SessionList, meta: { requiresAuth: true } },
     { path: '/sessions/:id', component: SessionDetail, meta: { requiresAuth: true } },
+    { path: '/admin/login', component: AdminLogin },
+    {
+        path: '/admin',
+        component: AdminLayout,
+        meta: { requiresAdmin: true },
+        children: [
+            { path: '', redirect: '/admin/dashboard' },
+            { path: 'dashboard', component: AdminDashboard },
+            { path: 'users', component: AdminUsers },
+            { path: 'papers', component: AdminPapers },
+            { path: 'monitor', component: AdminMonitor },
+            { path: 'llm', component: AdminLLM },
+        ],
+    },
 ]
 
 const router = createRouter({
@@ -18,11 +39,11 @@ const router = createRouter({
     routes
 })
 
-// 路由守卫拦截
 router.beforeEach((to, from, next) => {
-    const token = localStorage.getItem('token')
-    if (to.meta.requiresAuth && !token) {
+    if (to.meta.requiresAuth && !localStorage.getItem('token')) {
         next('/login')
+    } else if (to.meta.requiresAdmin && !localStorage.getItem('admin_token')) {
+        next('/admin/login')
     } else {
         next()
     }
