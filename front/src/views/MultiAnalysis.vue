@@ -29,7 +29,7 @@
           <template v-else>{{ msg.content }}</template>
         </div>
       </div>
-      <div v-if="analyzing" class="message ai">
+      <div v-if="analyzing && !streamingActive" class="message ai">
         <div class="msg-bubble loading">AI 正在分析多篇论文，请稍候...</div>
       </div>
     </div>
@@ -57,57 +57,73 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
 import { renderMarkdown } from '../utils/markdown.js'
 
 const props = defineProps({
-  selectedPapers: {
-    type: Array,
-    default: () => [],
-  },
+  selectedPapers: { type: Array, default: () => [] },
+  initialSessionId: { type: String, default: null },
 })
 defineEmits(['remove-paper'])
 
 const chatBox = ref(null)
 const question = ref('')
 const analyzing = ref(false)
+const streamingActive = ref(false)
 const chatHistory = ref([])
-let currentSessionId = null  // 当前多论文分析会话 _id
+let currentSessionId = null
 
-// 论文列表变化时重置会话（新的论文组合 = 新会话）
+// 加载已有会话历史（继续对话）
+onMounted(async () => {
+  if (props.initialSessionId) {
+    try {
+      const res = await api.getSession(props.initialSessionId)
+      const msgs = res.data.messages || []
+      chatHistory.value = msgs.map(m => ({
+        role: m.role === 'assistant' ? 'ai' : 'user',
+        content: m.content,
+        keywords: m.keywords || [],
+      }))
+      currentSessionId = props.initialSessionId
+      await nextTick()
+      scrollToBottom()
+    } catch {
+      // 静默失败
+    }
+  }
+})
+
+// 论文列表变化时重置会话（initialSessionId 提供时不重置）
 watch(
     () => props.selectedPapers.map(p => p.id).join(','),
-    () => {
-      currentSessionId = null
-      if (props.selectedPapers.length >= 2) {
-        chatHistory.value.push({
-          role: 'ai',
-          content: `已选中 ${props.selectedPapers.length} 篇论文，可以开始提问了。`,
-          keywords: [],
-        })
-        scrollToBottom()
+    (newVal, oldVal) => {
+      if (newVal !== oldVal && !props.initialSessionId) {
+        currentSessionId = null
+        if (props.selectedPapers.length >= 2) {
+          chatHistory.value.push({
+            role: 'ai',
+            content: `已选中 ${props.selectedPapers.length} 篇论文，可以开始提问了。`,
+            keywords: [],
+          })
+          scrollToBottom()
+        }
       }
     }
 )
 
 const scrollToBottom = async () => {
   await nextTick()
-  if (chatBox.value) {
-    chatBox.value.scrollTop = chatBox.value.scrollHeight
-  }
+  if (chatBox.value) chatBox.value.scrollTop = chatBox.value.scrollHeight
 }
 
 const sendQuestion = async () => {
   if (!question.value.trim()) return
-  if (props.selectedPapers.length < 2) {
-    return ElMessage.warning('请至少选择两篇论文')
-  }
+  if (props.selectedPapers.length < 2) return ElMessage.warning('请至少选择两篇论文')
+
   const notReady = props.selectedPapers.filter(p => !p.is_processed)
-  if (notReady.length) {
-    return ElMessage.warning(`以下论文尚未解析完成：${notReady.map(p => p.title).join('、')}`)
-  }
+  if (notReady.length) return ElMessage.warning(`以下论文尚未解析完成：${notReady.map(p => p.title).join('、')}`)
 
   const qText = question.value
   chatHistory.value.push({ role: 'user', content: qText })
@@ -115,15 +131,15 @@ const sendQuestion = async () => {
   analyzing.value = true
   scrollToBottom()
 
-  // 首次提问时创建多论文分析会话
+  // 首次提问时创建会话
   if (!currentSessionId) {
     try {
       const titles = props.selectedPapers.map(p => p.title)
-      const sessionTitle = `多论文分析：${titles.slice(0, 2).join('、')}${titles.length > 2 ? '等' : ''}`
       const sessionRes = await api.createSession({
-        title: sessionTitle,
+        title: `多论文分析：${titles.slice(0, 2).join('、')}${titles.length > 2 ? '等' : ''}`,
         session_type: 'multi',
         paper_titles: titles,
+        paper_ids: props.selectedPapers.map(p => p.id),
       })
       currentSessionId = sessionRes.data.id
     } catch {
@@ -136,32 +152,69 @@ const sendQuestion = async () => {
     api.addMessage(currentSessionId, 'user', qText).catch(() => {})
   }
 
-  try {
-    const ids = props.selectedPapers.map(p => p.id)
-    const res = await api.analyzeMultiple(ids, qText)
-    const answer = res.data.answer
-    const keywords = res.data.keywords || []
-    chatHistory.value.push({ role: 'ai', content: answer, keywords })
+  const ids = props.selectedPapers.map(p => p.id)
+  let collectedKeywords = []
+  let fullAnswer = ''
 
-    // 保存 AI 回复（含关键词）
-    if (currentSessionId) {
-      api.addMessage(currentSessionId, 'assistant', answer, keywords).catch(() => {})
+  // 添加 AI 消息占位
+  chatHistory.value.push({ role: 'ai', content: '', keywords: [] })
+  const aiMsg = chatHistory.value[chatHistory.value.length - 1]
+
+  try {
+    const response = await api.analyzeMultipleStream(ids, qText, currentSessionId)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+    streamingActive.value = true
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (raw === '[DONE]') continue
+        try {
+          const parsed = JSON.parse(raw)
+          if (parsed.type === 'keywords') {
+            collectedKeywords = parsed.keywords || []
+            aiMsg.keywords = collectedKeywords
+          } else if (parsed.type === 'content' && parsed.content) {
+            fullAnswer += parsed.content
+            aiMsg.content = fullAnswer
+            scrollToBottom()
+          }
+        } catch {
+          // 忽略解析错误
+        }
+      }
     }
-  } catch (error) {
-    chatHistory.value.push({ role: 'ai', content: '抱歉，请求失败，请检查系统日志。', keywords: [] })
+
+    if (!fullAnswer) aiMsg.content = '抱歉，未收到回复。'
+
+    // 保存 AI 回复
+    if (currentSessionId && fullAnswer) {
+      api.addMessage(currentSessionId, 'assistant', fullAnswer, collectedKeywords).catch(() => {})
+    }
+  } catch {
+    aiMsg.content = '抱歉，请求失败，请检查系统日志。'
   } finally {
     analyzing.value = false
+    streamingActive.value = false
     scrollToBottom()
   }
 }
 </script>
 
 <style scoped>
-.multi-analysis {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
+.multi-analysis { display: flex; flex-direction: column; height: 100%; }
 
 .selected-papers {
   padding: 10px 15px;
@@ -176,41 +229,20 @@ const sendQuestion = async () => {
 .label { font-size: 13px; color: #606266; flex-shrink: 0; }
 .paper-tag { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 
-.chat-box {
-  flex-grow: 1;
-  padding: 15px;
-  overflow-y: auto;
-  background-color: #fafafa;
-}
+.chat-box { flex-grow: 1; padding: 15px; overflow-y: auto; background-color: #fafafa; }
 .message { margin-bottom: 15px; display: flex; }
 .message.user { justify-content: flex-end; }
 .message.ai { justify-content: flex-start; }
-.msg-bubble {
-  max-width: 85%;
-  padding: 10px 14px;
-  border-radius: 8px;
-  line-height: 1.6;
-  font-size: 14px;
-}
+.msg-bubble { max-width: 85%; padding: 10px 14px; border-radius: 8px; line-height: 1.6; font-size: 14px; }
 .user .msg-bubble { background-color: #95ec69; color: #000; }
 .ai .msg-bubble { background-color: #fff; border: 1px solid #ebeef5; color: #333; }
 .loading { color: #909399; font-style: italic; }
 
-.keywords-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px;
-  margin-bottom: 8px;
-}
+.keywords-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 8px; }
 .kw-label { font-size: 12px; color: #909399; }
 .kw-tag { font-size: 12px; }
 .divider { border-top: 1px solid #ebeef5; margin-bottom: 8px; }
 
-.input-area {
-  padding: 15px;
-  border-top: 1px solid #ebeef5;
-  background: #fff;
-}
+.input-area { padding: 15px; border-top: 1px solid #ebeef5; background: #fff; }
 .send-btn { margin-top: 10px; width: 100%; }
 </style>

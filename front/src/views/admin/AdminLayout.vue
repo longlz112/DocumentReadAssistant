@@ -26,6 +26,10 @@
           <el-icon><Cpu /></el-icon>
           <span>大模型消耗</span>
         </el-menu-item>
+        <el-menu-item index="/admin/logs">
+          <el-icon><List /></el-icon>
+          <span>操作日志</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
 
@@ -47,7 +51,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Setting, DataAnalysis, User, Document, Monitor, Cpu } from '@element-plus/icons-vue'
+import { Setting, DataAnalysis, User, Document, Monitor, Cpu, List } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -60,6 +64,7 @@ const titleMap = {
   '/admin/papers': '论文管理',
   '/admin/monitor': '系统监控',
   '/admin/llm': '大模型消耗',
+  '/admin/logs': '操作日志',
 }
 const pageTitle = computed(() => titleMap[route.path] || '管理后台')
 

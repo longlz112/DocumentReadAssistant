@@ -88,10 +88,11 @@
       <MultiAnalysis
           v-if="showMultiAnalysis"
           :selected-papers="selectedPapers"
+          :initial-session-id="multiInitialSessionId"
           @remove-paper="removePaperFromSelection"
       />
       <!-- 单篇论文工作区 -->
-      <Workspace v-else-if="currentPaper" :paper="currentPaper" />
+      <Workspace v-else-if="currentPaper" :paper="currentPaper" :initial-session-id="singleInitialSessionId" />
       <div v-else class="empty-state">
         <el-empty :description="multiMode ? '请在左侧勾选至少两篇论文，然后点击「开始对比分析」' : '请在左侧选择或上传一篇论文'" />
       </div>
@@ -142,7 +143,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Document, Grid, User, Delete, InfoFilled } from '@element-plus/icons-vue'
 import api from '../api'
@@ -150,11 +151,16 @@ import Workspace from './Workspace.vue'
 import MultiAnalysis from './MultiAnalysis.vue'
 
 const router = useRouter()
+const route = useRoute()
 const papers = ref([])
 const activePaperId = ref('')
 const currentPaper = ref(null)
 const uploading = ref(false)
 const username = ref(localStorage.getItem('username') || '')
+
+// 继续对话的会话 ID
+const singleInitialSessionId = ref(null)
+const multiInitialSessionId = ref(null)
 
 // 多选相关状态
 const multiMode = ref(false)
@@ -370,8 +376,33 @@ const logout = () => {
   router.push('/login')
 }
 
-onMounted(() => {
-  fetchPapers()
+onMounted(async () => {
+  await fetchPapers()
+
+  // 处理"继续对话"跳转参数
+  const sessionId = route.query.session_id
+  const paperId = route.query.paper_id ? parseInt(route.query.paper_id) : null
+  const isMulti = route.query.multi === 'true'
+  const paperIds = route.query.paper_ids
+    ? route.query.paper_ids.split(',').map(Number)
+    : []
+
+  if (sessionId && paperId) {
+    // 单论文继续对话
+    const paper = papers.value.find(p => p.id === paperId)
+    if (paper) {
+      singleInitialSessionId.value = sessionId
+      selectPaper(paper)
+    }
+  } else if (sessionId && isMulti && paperIds.length >= 2) {
+    // 多论文继续对话
+    multiInitialSessionId.value = sessionId
+    multiMode.value = true
+    selectedPapers.value = papers.value.filter(p => paperIds.includes(p.id))
+    if (selectedPapers.value.length >= 2) {
+      showMultiAnalysis.value = true
+    }
+  }
 })
 </script>
 

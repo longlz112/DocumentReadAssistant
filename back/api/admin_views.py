@@ -12,7 +12,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 
-from .models import LLMUsageRecord, Paper
+from .models import LLMUsageRecord, OperationLog, Paper
 
 
 class IsAdminUser(BasePermission):
@@ -343,5 +343,38 @@ class AdminLLMRecordsView(views.APIView):
                 'request_id': r.request_id,
             }
             for r in records
+        ]
+        return Response({'total': total, 'results': data})
+
+
+class AdminLogsView(views.APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        page = max(int(request.query_params.get('page', 1)), 1)
+        page_size = min(int(request.query_params.get('page_size', 20)), 100)
+        search = request.query_params.get('search', '')
+        result_filter = request.query_params.get('result', '')
+
+        qs = OperationLog.objects.select_related('user').order_by('-operation_time')
+        if search:
+            qs = qs.filter(
+                Q(log_info__icontains=search) | Q(user__username__icontains=search)
+            )
+        if result_filter in ('success', 'failed'):
+            qs = qs.filter(operation_result=result_filter)
+
+        total = qs.count()
+        logs = qs[(page - 1) * page_size: page * page_size]
+        data = [
+            {
+                'id': log.id,
+                'user_id': log.user_id,
+                'username': log.user.username if log.user else '—',
+                'log_info': log.log_info,
+                'operation_time': log.operation_time.isoformat(),
+                'operation_result': log.operation_result,
+            }
+            for log in logs
         ]
         return Response({'total': total, 'results': data})

@@ -11,4 +11,5 @@ urlpatterns = [
     path('system/', admin_views.AdminSystemView.as_view()),
     path('llm/stats/', admin_views.AdminLLMStatsView.as_view()),
     path('llm/records/', admin_views.AdminLLMRecordsView.as_view()),
+    path('logs/', admin_views.AdminLogsView.as_view()),
 ]

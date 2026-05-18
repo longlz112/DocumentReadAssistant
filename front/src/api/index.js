@@ -1,8 +1,10 @@
 import axios from 'axios'
 
+const BASE_URL = 'http://localhost:8000/api/'
+
 const api = axios.create({
-    baseURL: 'http://localhost:8000/api/', // Django 后端地址
-    timeout: 60000, // 大模型回答较慢，超时设长一点
+    baseURL: BASE_URL,
+    timeout: 60000,
 })
 
 // 请求拦截器：自动带上 Token
@@ -13,6 +15,19 @@ api.interceptors.request.use(config => {
     }
     return config
 })
+
+// 流式请求辅助函数（使用原生 fetch，以支持 ReadableStream）
+function _streamFetch(path, body) {
+    const token = localStorage.getItem('token')
+    return fetch(BASE_URL + path, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Token ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+    })
+}
 
 export default {
     // 认证
@@ -25,10 +40,16 @@ export default {
         headers: { 'Content-Type': 'multipart/form-data' }
     }),
     deletePaper: (paperId) => api.delete(`papers/${paperId}/`),
-    askQuestion: (paperId, question) => api.post(`papers/${paperId}/ask/`, { question }),
+    askQuestion: (paperId, question, sessionId = null) =>
+        api.post(`papers/${paperId}/ask/`, { question, session_id: sessionId }),
+    askStream: (paperId, question, sessionId = null) =>
+        _streamFetch(`papers/${paperId}/ask_stream/`, { question, session_id: sessionId }),
     pollingStatus: (paperId) => api.get(`papers/${paperId}/status/`),
     reparsePaper: (paperId) => api.post(`papers/${paperId}/reparse/`),
-    analyzeMultiple: (paperIds, question) => api.post('papers/analyze_multi/', { paper_ids: paperIds, question }),
+    analyzeMultiple: (paperIds, question, sessionId = null) =>
+        api.post('papers/analyze_multi/', { paper_ids: paperIds, question, session_id: sessionId }),
+    analyzeMultipleStream: (paperIds, question, sessionId = null) =>
+        _streamFetch('papers/analyze_multi_stream/', { paper_ids: paperIds, question, session_id: sessionId }),
 
     // 元数据
     getMetadata: (paperId) => api.get(`papers/${paperId}/metadata/`),
@@ -49,5 +70,6 @@ export default {
     createSession: (data) => api.post('sessions/', data),
     updateSession: (id, data) => api.patch(`sessions/${id}/`, data),
     deleteSession: (id) => api.delete(`sessions/${id}/`),
-    addMessage: (id, role, content, keywords) => api.post(`sessions/${id}/add_message/`, { role, content, ...(keywords ? { keywords } : {}) }),
+    addMessage: (id, role, content, keywords) =>
+        api.post(`sessions/${id}/add_message/`, { role, content, ...(keywords ? { keywords } : {}) }),
 }

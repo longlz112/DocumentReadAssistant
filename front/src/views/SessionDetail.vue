@@ -19,6 +19,12 @@
             <el-button :icon="Edit" text size="small" @click="startEditTitle" />
           </template>
         </div>
+        <el-button
+          v-if="canContinue"
+          type="primary"
+          size="small"
+          @click="continueSession"
+        >继续对话</el-button>
         <el-button :icon="Download" size="small" @click="handleExport" :disabled="loading">
           导出 Markdown
         </el-button>
@@ -66,8 +72,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, computed, onMounted, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Edit, Loading, Download } from '@element-plus/icons-vue'
 import api from '../api/index.js'
@@ -75,11 +81,17 @@ import { renderMarkdown } from '../utils/markdown.js'
 import { exportSessionAsMarkdown } from '../utils/export.js'
 
 const route = useRoute()
-const session = ref({ title: '', messages: [] })
+const router = useRouter()
+const session = ref({ title: '', messages: [], paper_ids: [], session_type: 'single' })
 const loading = ref(false)
 const messagesRef = ref(null)
 const editingTitle = ref(false)
 const editTitle = ref('')
+
+// 是否可以继续对话（需要有 paper_ids）
+const canContinue = computed(() => {
+  return session.value.paper_ids && session.value.paper_ids.length > 0
+})
 
 onMounted(async () => {
   loading.value = true
@@ -129,6 +141,17 @@ function formatTime(iso) {
 
 function handleExport() {
   exportSessionAsMarkdown(session.value)
+}
+
+function continueSession() {
+  const s = session.value
+  if (!s.paper_ids || s.paper_ids.length === 0) return
+
+  if (s.session_type === 'multi' && s.paper_ids.length >= 2) {
+    router.push(`/?session_id=${s.id}&multi=true&paper_ids=${s.paper_ids.join(',')}`)
+  } else {
+    router.push(`/?session_id=${s.id}&paper_id=${s.paper_ids[0]}`)
+  }
 }
 </script>
 

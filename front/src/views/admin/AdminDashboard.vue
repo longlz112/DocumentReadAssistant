@@ -76,7 +76,7 @@ const statCards = ref([
   { label: '总用户数', value: '-', icon: 'User', color: '#409eff' },
   { label: '活跃用户', value: '-', icon: 'Check', color: '#67c23a' },
   { label: '总论文数', value: '-', icon: 'Document', color: '#e6a23c' },
-  { label: '今日新增用户', value: '-', icon: 'Clock', color: '#f56c6c' },
+  { label: '今日新增', value: '-', icon: 'Clock', color: '#f56c6c' },
 ])
 
 function makeLineOption(dates, values, name, color) {

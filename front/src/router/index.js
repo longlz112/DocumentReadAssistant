@@ -11,6 +11,7 @@ import AdminUsers from '../views/admin/AdminUsers.vue'
 import AdminPapers from '../views/admin/AdminPapers.vue'
 import AdminMonitor from '../views/admin/AdminMonitor.vue'
 import AdminLLM from '../views/admin/AdminLLM.vue'
+import AdminLogs from '../views/admin/AdminLogs.vue'
 
 const routes = [
     { path: '/login', component: Login },
@@ -30,6 +31,7 @@ const routes = [
             { path: 'papers', component: AdminPapers },
             { path: 'monitor', component: AdminMonitor },
             { path: 'llm', component: AdminLLM },
+            { path: 'logs', component: AdminLogs },
         ],
     },
 ]

@@ -174,49 +174,98 @@ def process_paper_to_vector_db(file_path, paper_id):
         return False
 
 
-def ask_paper_question(paper_id, question):
+def _build_history_text(history):
+    """将会话历史转为提示词文本。"""
+    if not history:
+        return ""
+    lines = []
+    for msg in history[-6:]:  # 最近3轮对话
+        role = "用户" if msg.get("role") == "user" else "助手"
+        lines.append(f"{role}：{msg.get('content', '')}")
+    return "\n".join(lines)
+
+
+def _is_abstract_query(question: str) -> bool:
     """
-    针对指定论文提出问题并获取回答
+    使用 LLM 判断问题是否属于摘要/概述类查询。
+    若是，返回 True，跳过 RAG 直接用元数据摘要回答；否则返回 False。
     """
     try:
+        from langchain_core.messages import HumanMessage
+        llm = ChatTongyi(model="qwen-plus")  # 不附 callback，仅做轻量意图分类
+        prompt = (
+            "判断下面的问题是否属于以下任意一类，只需回答 yes 或 no：\n"
+            "1. 询问论文的摘要、概述、简介\n"
+            "2. 询问论文研究了什么、解决了什么问题\n"
+            "3. 询问论文的主要内容、核心贡献或创新点\n"
+            "4. 询问论文总体讲了什么\n\n"
+            f"问题：{question}\n\n"
+            "回答（只能是 yes 或 no）："
+        )
+        result = llm.invoke([HumanMessage(content=prompt)])
+        return (result.content or "").strip().lower().startswith("yes")
+    except Exception as e:
+        logger.warning(f"Intent detection failed, falling back to RAG: {e}")
+        return False
+
+
+def _build_abstract_prompt(question: str, abstract: str, history_section: str) -> str:
+    return (
+        "你是一个专业论文助手，请根据以下论文摘要回答用户的问题，回答要简洁清晰。\n"
+        + history_section + "\n"
+        + "论文摘要：\n" + abstract + "\n\n"
+        + "问题：\n" + question
+    )
+
+
+def ask_paper_question(paper_id, question, history=None, paper_abstract=None):
+    """
+    针对指定论文提出问题并获取回答（支持对话历史记忆）。
+    若问题属于摘要类，直接使用数据库中的元数据摘要，跳过 RAG 检索。
+    """
+    from langchain_core.messages import HumanMessage
+
+    try:
+        history_text = _build_history_text(history)
+        history_section = f"\n历史对话（供参考）：\n{history_text}\n" if history_text else ""
+
+        # ── 意图识别：摘要类问题走元数据，跳过 RAG ──────────────────────────
+        abstract_valid = paper_abstract and paper_abstract not in ("无", "", None)
+        if abstract_valid and _is_abstract_query(question):
+            logger.info(f"[Intent] Abstract query detected for paper {paper_id}, skipping RAG.")
+            llm = _get_llm("single")
+            prompt_text = _build_abstract_prompt(question, paper_abstract, history_section)
+            result = llm.invoke([HumanMessage(content=prompt_text)])
+            return result.content if hasattr(result, "content") else str(result)
+
+        # ── 普通问题走 RAG 检索 ────────────────────────────────────────────
         persist_directory = get_vector_db_path(paper_id)
         if not os.path.exists(persist_directory):
-            print(persist_directory)
             return "该论文尚未完成解析或解析失败，请稍后重试。"
 
-        # 加载向量数据库
         embeddings = _get_embeddings()
-        vector_db = Chroma(
-            persist_directory=persist_directory, embedding_function=embeddings
-        )
-
-        # 配置大模型和检索器
+        vector_db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
         llm = _get_llm("single")
-        retriever = vector_db.as_retriever(search_kwargs={"k": 3})  # 检索前3个相关分块
+        retriever = vector_db.as_retriever(search_kwargs={"k": 3})
 
-        # prompt模板
         prompt = ChatPromptTemplate.from_template(
             """你是一个专业论文助手，请根据提供的上下文回答问题。
 
-            要求：
-            ▪ 只基于上下文回答
+要求：
+▪ 只基于上下文回答
+▪ 如果无法从上下文得出答案，请说"未在文档中找到相关信息"
+▪ 回答要简洁清晰
+{history_section}
+上下文：
+{context}
 
-            ▪ 如果无法从上下文得出答案，请说"未在文档中找到相关信息"
-
-            ▪ 回答要简洁清晰
-
-
-            上下文：
-            {context}
-
-            问题：
-            {question}
-            """
+问题：
+{question}
+"""
         )
 
-        # 构建RAG链
         qa_chain = (
-            {"context": retriever, "question": RunnablePassthrough()}
+            {"context": retriever, "question": RunnablePassthrough(), "history_section": lambda _: history_section}
             | prompt
             | llm
         )
@@ -229,20 +278,76 @@ def ask_paper_question(paper_id, question):
         return f"系统处理问答时出现错误: {str(e)}"
 
 
-def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None):
+def ask_paper_question_stream(paper_id, question, history=None, paper_abstract=None):
     """
-    多论文对比分析：两阶段 LLM + 多向量库并行检索
+    流式问答：针对指定论文提出问题，以生成器方式逐块返回回答内容。
+    若问题属于摘要类，直接使用数据库中的元数据摘要，跳过 RAG 检索。
+    """
+    from langchain_core.messages import HumanMessage
+
+    try:
+        history_text = _build_history_text(history)
+        history_section = f"\n历史对话（供参考）：\n{history_text}\n" if history_text else ""
+
+        # ── 意图识别：摘要类问题走元数据，跳过 RAG ──────────────────────────
+        abstract_valid = paper_abstract and paper_abstract not in ("无", "", None)
+        if abstract_valid and _is_abstract_query(question):
+            logger.info(f"[Intent] Abstract query detected for paper {paper_id}, skipping RAG (stream).")
+            llm = _get_llm("single")
+            prompt_text = _build_abstract_prompt(question, paper_abstract, history_section)
+            for chunk in llm.stream([HumanMessage(content=prompt_text)]):
+                if chunk.content:
+                    yield chunk.content
+            return
+
+        # ── 普通问题走 RAG 检索 ────────────────────────────────────────────
+        persist_directory = get_vector_db_path(paper_id)
+        if not os.path.exists(persist_directory):
+            yield "该论文尚未完成解析或解析失败，请稍后重试。"
+            return
+
+        embeddings = _get_embeddings()
+        vector_db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+        llm = _get_llm("single")
+        retriever = vector_db.as_retriever(search_kwargs={"k": 3})
+
+        context_docs = retriever.invoke(question)
+        context = "\n\n".join(doc.page_content for doc in context_docs)
+
+        prompt_text = (
+            "你是一个专业论文助手，请根据提供的上下文回答问题。\n\n"
+            "要求：\n"
+            "▪ 只基于上下文回答\n"
+            "▪ 如果无法从上下文得出答案，请说未在文档中找到相关信息\n"
+            "▪ 回答要简洁清晰\n"
+            + history_section + "\n"
+            + "上下文：\n" + context + "\n\n"
+            + "问题：\n" + question
+        )
+
+        for chunk in llm.stream([HumanMessage(content=prompt_text)]):
+            if chunk.content:
+                yield chunk.content
+
+    except Exception as e:
+        logger.error(f"Error in ask_paper_question_stream for paper {paper_id}: {str(e)}")
+        yield f"系统处理问答时出现错误: {str(e)}"
+
+
+def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None, history=None):
+    """
+    多论文对比分析：两阶段 LLM + 多向量库并行检索（支持对话历史记忆）
 
     paper_ids_titles: list of (paper_id, paper_title)
     question: 用户问题
     paper_metadata: dict {paper_id: {"title": ..., "abstract": ..., "keywords": ...}}
+    history: list of {"role": "user"|"assistant", "content": ...}
     """
     try:
         llm = _get_llm("multi")
         embeddings = _get_embeddings()
 
         # ── 第一阶段：让 LLM 根据问题和论文元数据生成检索关键词 ──────────────────
-        # 拼接所有论文的元数据摘要作为上下文
         meta_context = ""
         if paper_metadata:
             for pid, title in paper_ids_titles:
@@ -280,7 +385,6 @@ def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None):
         keyword_result = keyword_chain.invoke({"question": question, "meta_context": meta_context})
         raw = keyword_result.content.strip()
 
-        # 提取 JSON 数组（防止模型在前后加了多余文字）
         start = raw.find("[")
         end = raw.rfind("]") + 1
         keywords = json.loads(raw[start:end]) if start != -1 else [question]
@@ -297,7 +401,6 @@ def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None):
             )
             retriever = vector_db.as_retriever(search_kwargs={"k": 3})
 
-            # 对所有关键词检索，合并去重
             seen = set()
             chunks = []
             for kw in keywords:
@@ -328,6 +431,9 @@ def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None):
             else:
                 context_text += "（未找到相关内容）"
 
+        history_text = _build_history_text(history)
+        history_section = f"\n历史对话（供参考）：\n{history_text}\n" if history_text else ""
+
         analysis_prompt = ChatPromptTemplate.from_template(
             """你是一个专业的学术分析助手，擅长对多篇论文进行对比分析。
 以下是从多篇论文中检索到的相关内容片段，请基于这些内容回答用户的问题。
@@ -340,7 +446,7 @@ def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None):
 • 结论要有依据，引用原文片段支撑
 
 • 如某篇论文未找到相关内容，请说明
-
+{history_section}
 
 检索到的论文内容：
 {context}
@@ -350,7 +456,7 @@ def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None):
 
         analysis_chain = analysis_prompt | llm
         result = analysis_chain.invoke(
-            {"context": context_text, "question": question}
+            {"context": context_text, "question": question, "history_section": history_section}
         )
         answer = result.content if hasattr(result, "content") else str(result)
 
@@ -362,6 +468,100 @@ def analyze_multiple_papers(paper_ids_titles, question, paper_metadata=None):
     except Exception as e:
         logger.error(f"Error in analyze_multiple_papers: {str(e)}")
         return {"keywords": [], "answer": f"系统处理多论文分析时出现错误: {str(e)}"}
+
+
+def analyze_multiple_papers_stream(paper_ids_titles, question, paper_metadata=None, history=None):
+    """
+    多论文对比分析流式输出。
+    先完成关键词生成和检索（非流式），再流式输出综合分析结果。
+    Yield 格式：{"type": "keywords"|"content"|"done"|"error", ...}
+    """
+    import json as _json
+    from langchain_core.messages import HumanMessage
+
+    try:
+        llm = _get_llm("multi")
+        embeddings = _get_embeddings()
+
+        # 阶段 1：关键词生成（非流式）
+        meta_context = ""
+        if paper_metadata:
+            for pid, title in paper_ids_titles:
+                meta = paper_metadata.get(pid, {})
+                meta_context += (
+                    f"\n论文《{title}》\n"
+                    f"  标题：{meta.get('title', '无')}\n"
+                    f"  关键词：{meta.get('keywords', '无')}\n"
+                    f"  摘要：{meta.get('abstract', '无')[:300]}\n"
+                )
+
+        keyword_prompt = ChatPromptTemplate.from_template(
+            """你是一个学术研究助手。请根据用户的问题以及各论文的元数据，
+生成 3-5 个最适合在论文向量数据库中检索相关内容的关键短语。
+只输出 JSON 数组，格式：["关键词1", "关键词2", ...]，不要有其他文字。
+
+各论文元数据：
+{meta_context}
+
+用户问题：{question}"""
+        )
+        keyword_result = (keyword_prompt | llm).invoke({"question": question, "meta_context": meta_context})
+        raw = keyword_result.content.strip()
+        start, end = raw.find("["), raw.rfind("]") + 1
+        keywords = _json.loads(raw[start:end]) if start != -1 else [question]
+        logger.info(f"Multi-paper stream keywords: {keywords}")
+        yield _json.dumps({"type": "keywords", "keywords": keywords}, ensure_ascii=False)
+
+        # 阶段 2：并行检索（非流式）
+        def retrieve_from_paper(paper_id, paper_title):
+            persist_directory = get_vector_db_path(paper_id)
+            if not os.path.exists(persist_directory):
+                return paper_title, []
+            vector_db = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+            retriever = vector_db.as_retriever(search_kwargs={"k": 3})
+            seen, chunks = set(), []
+            for kw in keywords:
+                for doc in retriever.invoke(kw):
+                    text = doc.page_content.strip()
+                    if text not in seen:
+                        seen.add(text)
+                        chunks.append(text)
+            return paper_title, chunks
+
+        paper_contexts = {}
+        with ThreadPoolExecutor(max_workers=len(paper_ids_titles)) as executor:
+            futures = {executor.submit(retrieve_from_paper, pid, t): t for pid, t in paper_ids_titles}
+            for future in as_completed(futures):
+                title, chunks = future.result()
+                paper_contexts[title] = chunks
+
+        context_text = ""
+        for title, chunks in paper_contexts.items():
+            context_text += f"\n\n【论文：{title}】\n"
+            context_text += "\n---\n".join(chunks) if chunks else "（未找到相关内容）"
+
+        # 阶段 3：流式综合分析
+        history_text = _build_history_text(history)
+        history_section = f"\n历史对话（供参考）：\n{history_text}\n" if history_text else ""
+
+        prompt_text = (
+            "你是一个专业的学术分析助手，擅长对多篇论文进行对比分析。\n"
+            "以下是从多篇论文中检索到的相关内容片段，请基于这些内容回答用户的问题。\n\n"
+            "要求：\n• 按论文逐一分析，再给出综合对比\n"
+            "• 指出相似点和差异点\n• 结论要有依据，引用原文片段支撑\n"
+            f"• 如某篇论文未找到相关内容，请说明{history_section}\n\n"
+            f"检索到的论文内容：\n{context_text}\n\n用户问题：{question}"
+        )
+
+        for chunk in llm.stream([HumanMessage(content=prompt_text)]):
+            if chunk.content:
+                yield _json.dumps({"type": "content", "content": chunk.content}, ensure_ascii=False)
+
+        yield _json.dumps({"type": "done"})
+
+    except Exception as e:
+        logger.error(f"Error in analyze_multiple_papers_stream: {str(e)}")
+        yield _json.dumps({"type": "error", "error": str(e)}, ensure_ascii=False)
 
 
 def _get_neo4j_graph():

@@ -24,4 +24,5 @@ export default {
     getSystem: () => adminApi.get('system/'),
     getLLMStats: () => adminApi.get('llm/stats/'),
     getLLMRecords: (params) => adminApi.get('llm/records/', { params }),
+    getLogs: (params) => adminApi.get('logs/', { params }),
 }

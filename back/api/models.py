@@ -40,3 +40,13 @@ class LLMUsageRecord(models.Model):
     class Meta:
         ordering = ['-created_at']
 
+
+class OperationLog(models.Model):
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='operation_logs')
+    log_info = models.TextField()
+    operation_time = models.DateTimeField(auto_now_add=True)
+    operation_result = models.CharField(max_length=20, default='success')
+
+    class Meta:
+        ordering = ['-operation_time']
+
